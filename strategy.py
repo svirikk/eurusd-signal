@@ -5,8 +5,8 @@ Asia Range Sweep → CHOCH → FVG Entry Strategy
 import logging
 from typing import List, Optional, Dict
 from datetime import datetime, timedelta
-from oanda_client import Candle, OandaClient
-from config import Config
+from bingx_client import Candle, BingXClient
+from config_bingx import Config
 import utils
 
 
@@ -62,8 +62,8 @@ class TradingSignal:
 class StrategyEngine:
     """Main strategy engine"""
     
-    def __init__(self, oanda_client: OandaClient):
-        self.client = oanda_client
+    def __init__(self, bingx_client: BingXClient):
+        self.client = bingx_client
         self.m5_candles: List[Candle] = []
         self.m15_candles: List[Candle] = []
         self.asia_range: Optional[AsiaRange] = None

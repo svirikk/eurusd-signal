@@ -7,7 +7,7 @@ import logging
 from typing import Optional
 from datetime import datetime
 from strategy import TradingSignal
-from config import Config
+from config_bingx import Config
 
 
 logger = logging.getLogger(__name__)

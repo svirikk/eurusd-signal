@@ -5,8 +5,8 @@ Swing detection, FVG detection, etc.
 import hashlib
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime
-from oanda_client import Candle
-from config import Config
+from bingx_client import Candle
+from config_bingx import Config
 
 
 def is_swing_high(candles: List[Candle], index: int, lookback: int = 3) -> bool:
