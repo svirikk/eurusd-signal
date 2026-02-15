@@ -1,6 +1,6 @@
 """
 BingX TradFi Forex Perpetual API Client
-Handles all interactions with BingX TradFi Forex Perpetual Futures (EURUSD-USDT)
+Handles all interactions with BingX TradFi Forex Perpetual Futures (EURUSD)
 Note: Uses same Perpetual Swap endpoints but with TradFi symbols
 """
 import requests
@@ -58,8 +58,79 @@ class BingXClient:
     
     def __init__(self):
         self.base_url = Config.BINGX_BASE_URL
-        self.symbol = Config.SYMBOL
+        self.symbol = None  # Will be determined dynamically
+        self._verified_symbol = False
         
+    def verify_symbol(self) -> bool:
+        """
+        Verify and find correct symbol format for EURUSD
+        Returns True if found, False otherwise
+        """
+        if self._verified_symbol and self.symbol:
+            return True
+            
+        logger.info("🔍 Verifying EURUSD symbol format on BingX...")
+        
+        # Try getting contracts list
+        endpoint = f"{self.base_url}/openApi/swap/v2/quote/contracts"
+        
+        try:
+            response = requests.get(endpoint, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if data.get('code') != 0:
+                logger.error(f"❌ API error getting contracts: {data.get('msg')}")
+                return False
+            
+            contracts = data.get('data', [])
+            
+            # Look for EURUSD in various formats
+            possible_symbols = ['EURUSD-USDT', 'EUR-USD', 'EURUSD', 'EURUSD-PERP']
+            
+            for contract in contracts:
+                symbol = contract.get('symbol', '')
+                
+                # Check if it's EURUSD (forex pair)
+                if 'EUR' in symbol and 'USD' in symbol and 'JPY' not in symbol:
+                    self.symbol = symbol
+                    self._verified_symbol = True
+                    logger.info(f"✅ Found EURUSD symbol: {self.symbol}")
+                    return True
+            
+            # If not found in contracts list, try common formats
+            logger.warning(f"⚠️ EURUSD not found in contracts list. Trying common formats...")
+            
+            for test_symbol in possible_symbols:
+                if self._test_symbol(test_symbol):
+                    self.symbol = test_symbol
+                    self._verified_symbol = True
+                    logger.info(f"✅ Found working EURUSD symbol: {self.symbol}")
+                    return True
+            
+            logger.error(f"❌ Could not find valid EURUSD symbol on BingX")
+            logger.error(f"💡 Forex market might be closed (weekends/non-trading hours)")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error verifying symbol: {e}")
+            # Fallback to config symbol
+            self.symbol = Config.SYMBOL
+            return False
+    
+    def _test_symbol(self, test_symbol: str) -> bool:
+        """Test if a symbol works by trying to fetch its ticker"""
+        endpoint = f"{self.base_url}/openApi/swap/v2/quote/ticker"
+        params = {"symbol": test_symbol}
+        
+        try:
+            response = requests.get(endpoint, params=params, timeout=5)
+            data = response.json()
+            return data.get('code') == 0
+        except:
+            return False
+    
     def get_candles(self, interval: str, limit: int = 500) -> List[Candle]:
         """
         Fetch candles from BingX Perpetual Swap
@@ -71,6 +142,12 @@ class BingXClient:
         Returns:
             List of Candle objects
         """
+        # Verify symbol first
+        if not self.symbol or not self._verified_symbol:
+            if not self.verify_symbol():
+                logger.error("❌ Cannot fetch candles: symbol verification failed")
+                return []
+        
         endpoint = f"{self.base_url}/openApi/swap/v2/quote/klines"
         
         params = {
@@ -87,7 +164,14 @@ class BingXClient:
             
             # Check for API error
             if data.get('code') != 0:
-                logger.error(f"❌ BingX Perpetual API error: {data.get('msg', 'Unknown error')}")
+                error_msg = data.get('msg', 'Unknown error')
+                logger.error(f"❌ BingX Perpetual API error: {error_msg}")
+                
+                # Check if it's a trading hours issue
+                if 'not exist' in error_msg.lower() or 'not available' in error_msg.lower():
+                    logger.warning("💡 Symbol might not be available. Checking if forex market is closed...")
+                    logger.warning("⏰ Forex Perpetual has specific trading hours. Market may be closed (weekends/holidays)")
+                
                 return []
             
             # Parse candles
@@ -95,6 +179,7 @@ class BingXClient:
             
             if not kline_data:
                 logger.warning(f"⚠️ No candle data received for {self.symbol}")
+                logger.warning("⏰ Market might be closed or in non-trading session")
                 return []
             
             candles = [Candle(k) for k in kline_data]
@@ -120,6 +205,12 @@ class BingXClient:
         Returns:
             Dict with 'bid', 'ask', 'mid', 'spread_pips'
         """
+        # Verify symbol first
+        if not self.symbol or not self._verified_symbol:
+            if not self.verify_symbol():
+                logger.error("❌ Cannot fetch price: symbol verification failed")
+                return None
+        
         endpoint = f"{self.base_url}/openApi/swap/v2/quote/ticker"
         
         params = {
