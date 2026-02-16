@@ -31,10 +31,10 @@ class Config:
     LONDON_SESSION_START: int = 5  # 05:00 UTC
     LONDON_SESSION_END: int = 10   # 10:00 UTC
     
-    # Strategy Parameters
-    SWEEP_PIPS_THRESHOLD: float = 2.5  # Pips beyond Asia range to confirm sweep
-    SWING_LOOKBACK: int = 3  # Number of candles for swing high/low detection
-    FVG_MIN_PIPS: float = 1.5  # Minimum FVG size in pips
+    # Strategy Parameters (can be overridden via environment variables)
+    SWEEP_PIPS_THRESHOLD: float = float(os.getenv("SWEEP_PIPS_THRESHOLD", "1.5"))  # Pips beyond Asia range to confirm sweep
+    SWING_LOOKBACK: int = int(os.getenv("SWING_LOOKBACK", "3"))  # Number of candles for swing high/low detection
+    FVG_MIN_PIPS: float = float(os.getenv("FVG_MIN_PIPS", "1.5"))  # Minimum FVG size in pips
     
     # Risk Management
     MIN_RISK_REWARD: float = 1.5  # Minimum RR ratio
