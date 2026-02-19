@@ -141,10 +141,10 @@ class StrategyEngine:
     def detect_sweep(self) -> Optional[Dict]:
         """
         Detect liquidity sweep of Asia range during Frankfurt/London session
-        NOW LOGS ALL SWEEPS FOUND!
+        NOW RETURNS ALL SWEEPS for CHOCH checking!
         
         Returns:
-            Dict with sweep details or None
+            Dict with 'all_sweeps' and 'chosen_sweep' or None
         """
         if not self.asia_range or not self.m5_candles:
             return None
@@ -185,7 +185,10 @@ class StrategyEngine:
                     'swept_level': self.asia_range.high,
                     'direction': 'SELL',
                     'pips': pips_swept,
-                    'time': candle.time
+                    'time': candle.time,
+                    'high': candle.high,
+                    'low': candle.low,
+                    'close': candle.close
                 })
             
             # Check for bullish sweep (BUY)
@@ -197,7 +200,10 @@ class StrategyEngine:
                     'swept_level': self.asia_range.low,
                     'direction': 'BUY',
                     'pips': pips_swept,
-                    'time': candle.time
+                    'time': candle.time,
+                    'high': candle.high,
+                    'low': candle.low,
+                    'close': candle.close
                 })
         
         # Log all found sweeps
@@ -207,16 +213,25 @@ class StrategyEngine:
                 emoji = "🔴" if sweep['type'] == 'bearish' else "🟢"
                 logger.info(f"   {emoji} {sweep['type'].upper()} @ {sweep['time'].strftime('%H:%M')} - swept {sweep['pips']:.1f} pips")
             
-            # Return the MOST RECENT sweep (last in list = newest)
+            # Return ALL sweeps + the most recent one as default
             chosen_sweep = all_sweeps[0]  # Since we iterate backwards, first = newest
             logger.info(f"✅ Using MOST RECENT sweep: {chosen_sweep['type'].upper()} @ {chosen_sweep['time'].strftime('%H:%M')}")
             
             if chosen_sweep['type'] == 'bearish':
-                logger.info(f"🔴 BEARISH SWEEP detected: High={chosen_sweep['candle'].high:.5f}, Close={chosen_sweep['candle'].close:.5f}")
+                logger.info(f"🔴 BEARISH SWEEP detected: High={chosen_sweep['high']:.5f}, Close={chosen_sweep['close']:.5f}")
             else:
-                logger.info(f"🟢 BULLISH SWEEP detected: Low={chosen_sweep['candle'].low:.5f}, Close={chosen_sweep['candle'].close:.5f}")
+                logger.info(f"🟢 BULLISH SWEEP detected: Low={chosen_sweep['low']:.5f}, Close={chosen_sweep['close']:.5f}")
             
-            return chosen_sweep
+            # Return format with ALL sweeps
+            return {
+                'all_sweeps': all_sweeps,
+                'chosen_sweep': chosen_sweep,
+                # Keep old format fields for compatibility
+                'type': chosen_sweep['type'],
+                'candle': chosen_sweep['candle'],
+                'swept_level': chosen_sweep['swept_level'],
+                'direction': chosen_sweep['direction']
+            }
         
         return None
     
@@ -343,6 +358,7 @@ class StrategyEngine:
     def generate_signal(self) -> Optional[TradingSignal]:
         """
         Main signal generation logic
+        NOW CHECKS CHOCH FOR ALL SWEEPS!
         Implements: Asia Range → Sweep → CHOCH → FVG Entry
         
         Returns:
@@ -359,26 +375,92 @@ class StrategyEngine:
         if not asia_range:
             return None
         
-        # Step 2: Detect Sweep
-        sweep = self.detect_sweep()
-        if not sweep:
+        # Step 2: Detect ALL Sweeps
+        sweep_data = self.detect_sweep()
+        if not sweep_data:
             return None
         
-        # Find sweep candle index in m5_candles
-        sweep_candle_index = None
-        for i, candle in enumerate(self.m5_candles):
-            if candle.time == sweep['candle'].time:
-                sweep_candle_index = i
-                break
-        
-        if sweep_candle_index is None:
-            return None
-        
-        # Step 3: Detect CHOCH
-        choch = self.detect_choch(sweep['direction'], sweep_candle_index)
-        if not choch:
-            logger.info("⏳ Waiting for CHOCH...")
-            return None
+        # NEW: If detect_sweep returned multiple sweeps, check CHOCH for each
+        # and choose the one that ALREADY HAS CHOCH
+        if 'all_sweeps' in sweep_data:
+            logger.info(f"🔍 Checking CHOCH for all {len(sweep_data['all_sweeps'])} sweep(s)...")
+            
+            sweeps_with_choch = []
+            
+            for sweep in sweep_data['all_sweeps']:
+                # Find sweep candle index
+                sweep_candle_index = None
+                for i, candle in enumerate(self.m5_candles):
+                    if candle.time == sweep['time']:
+                        sweep_candle_index = i
+                        break
+                
+                if sweep_candle_index is None:
+                    continue
+                
+                # Check if this sweep has CHOCH
+                choch = self.detect_choch(sweep['direction'], sweep_candle_index)
+                
+                if choch:
+                    logger.info(f"   ✅ {sweep['type'].upper()} sweep @ {sweep['time'].strftime('%H:%M')} HAS CHOCH!")
+                    sweeps_with_choch.append({
+                        'sweep': sweep,
+                        'choch': choch,
+                        'sweep_index': sweep_candle_index
+                    })
+                else:
+                    logger.debug(f"   ⏳ {sweep['type'].upper()} sweep @ {sweep['time'].strftime('%H:%M')} - no CHOCH yet")
+            
+            # If we found sweeps with CHOCH, use the most recent one
+            if sweeps_with_choch:
+                # Sort by time (most recent first)
+                sweeps_with_choch.sort(key=lambda x: x['sweep']['time'], reverse=True)
+                chosen = sweeps_with_choch[0]
+                
+                logger.info(f"✅ FOUND {len(sweeps_with_choch)} sweep(s) with CHOCH!")
+                logger.info(f"✅ Using: {chosen['sweep']['type'].upper()} @ {chosen['sweep']['time'].strftime('%H:%M')} (has CHOCH)")
+                
+                sweep = chosen['sweep']
+                choch = chosen['choch']
+                sweep_candle_index = chosen['sweep_index']
+            else:
+                # No sweep has CHOCH yet - use most recent and wait
+                logger.info(f"⏳ None of the {len(sweep_data['all_sweeps'])} sweep(s) have CHOCH yet. Using most recent.")
+                sweep = sweep_data['chosen_sweep']
+                
+                # Find sweep candle index
+                sweep_candle_index = None
+                for i, candle in enumerate(self.m5_candles):
+                    if candle.time == sweep['time']:
+                        sweep_candle_index = i
+                        break
+                
+                if sweep_candle_index is None:
+                    return None
+                
+                choch = self.detect_choch(sweep['direction'], sweep_candle_index)
+                if not choch:
+                    logger.info("⏳ Waiting for CHOCH...")
+                    return None
+        else:
+            # Old format (single sweep) - fallback
+            sweep = sweep_data
+            
+            # Find sweep candle index
+            sweep_candle_index = None
+            for i, candle in enumerate(self.m5_candles):
+                if candle.time == sweep['candle'].time:
+                    sweep_candle_index = i
+                    break
+            
+            if sweep_candle_index is None:
+                return None
+            
+            # Step 3: Detect CHOCH
+            choch = self.detect_choch(sweep['direction'], sweep_candle_index)
+            if not choch:
+                logger.info("⏳ Waiting for CHOCH...")
+                return None
         
         # Step 4: Find Entry FVG
         fvg = self.find_entry_fvg(sweep['direction'], sweep_candle_index)
@@ -418,10 +500,10 @@ class StrategyEngine:
             },
             'sweep': {
                 'type': sweep['type'],
-                'candle_time': sweep['candle'].time,
-                'candle_high': sweep['candle'].high,
-                'candle_low': sweep['candle'].low,
-                'candle_close': sweep['candle'].close,
+                'candle_time': sweep.get('candle', sweep).time if hasattr(sweep.get('candle', sweep), 'time') else sweep['time'],
+                'candle_high': sweep.get('candle', sweep).high if hasattr(sweep.get('candle', sweep), 'high') else sweep.get('high', 0),
+                'candle_low': sweep.get('candle', sweep).low if hasattr(sweep.get('candle', sweep), 'low') else sweep.get('low', 0),
+                'candle_close': sweep.get('candle', sweep).close if hasattr(sweep.get('candle', sweep), 'close') else sweep.get('close', 0),
                 'swept_level': sweep['swept_level']
             },
             'choch': choch,
