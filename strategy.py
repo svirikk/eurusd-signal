@@ -140,7 +140,8 @@ class StrategyEngine:
     
     def detect_sweep(self) -> Optional[Dict]:
         """
-        Detect liquidity sweep of Asia range during London session
+        Detect liquidity sweep of Asia range during Frankfurt/London session
+        NOW LOGS ALL SWEEPS FOUND!
         
         Returns:
             Dict with sweep details or None
@@ -149,7 +150,6 @@ class StrategyEngine:
             return None
         
         # ✅ Перевіряємо Франкфурт + Лондон (07:00-13:00 UTC)
-        # Sweep може бути і в Франкфурті (07:00-08:00)!
         recent_candles = [
             c for c in self.m5_candles[-80:]
             if utils.is_time_in_session(c.time, Config.SWEEP_WINDOW_START, Config.SWEEP_WINDOW_END)
@@ -162,43 +162,68 @@ class StrategyEngine:
         # Логуємо поточну сесію
         current_hour = datetime.utcnow().hour
         if Config.FRANKFURT_SESSION_START <= current_hour < Config.FRANKFURT_SESSION_END:
-            logger.debug(f"📍 FRANKFURT session active (07:00-08:00 UTC) - watching for sweep!")
+            logger.debug(f"📍 FRANKFURT session active (07:00-08:00 UTC)")
         elif Config.LONDON_SESSION_START <= current_hour < Config.LONDON_SESSION_END:
             logger.debug(f"📍 LONDON session active (08:00-13:00 UTC)")
         
         sweep_threshold = self.client.pips_to_price(Config.SWEEP_PIPS_THRESHOLD)
+        bearish_target = self.asia_range.high + sweep_threshold
+        bullish_target = self.asia_range.low - sweep_threshold
         
-        # Check for bearish sweep (sweep high for SELL setup)
+        # 🔍 COLLECT ALL SWEEPS (both bearish and bullish)
+        all_sweeps = []
+        
         for i in range(len(recent_candles) - 1, -1, -1):
             candle = recent_candles[i]
             
-            # Sweep Asia High (for SELL)
-            if candle.high > self.asia_range.high + sweep_threshold:
-                if candle.close < self.asia_range.high:
-                    logger.info(f"🔴 BEARISH SWEEP detected: High={candle.high:.5f}, Close={candle.close:.5f}")
-                    return {
-                        'type': 'bearish',
-                        'candle': candle,
-                        'swept_level': self.asia_range.high,
-                        'direction': 'SELL'
-                    }
+            # Check for bearish sweep (SELL)
+            if candle.high > bearish_target and candle.close < self.asia_range.high:
+                pips_swept = (candle.high - self.asia_range.high) * 10000
+                all_sweeps.append({
+                    'type': 'bearish',
+                    'candle': candle,
+                    'swept_level': self.asia_range.high,
+                    'direction': 'SELL',
+                    'pips': pips_swept,
+                    'time': candle.time
+                })
             
-            # Sweep Asia Low (for BUY)
-            if candle.low < self.asia_range.low - sweep_threshold:
-                if candle.close > self.asia_range.low:
-                    logger.info(f"🟢 BULLISH SWEEP detected: Low={candle.low:.5f}, Close={candle.close:.5f}")
-                    return {
-                        'type': 'bullish',
-                        'candle': candle,
-                        'swept_level': self.asia_range.low,
-                        'direction': 'BUY'
-                    }
+            # Check for bullish sweep (BUY)
+            if candle.low < bullish_target and candle.close > self.asia_range.low:
+                pips_swept = (self.asia_range.low - candle.low) * 10000
+                all_sweeps.append({
+                    'type': 'bullish',
+                    'candle': candle,
+                    'swept_level': self.asia_range.low,
+                    'direction': 'BUY',
+                    'pips': pips_swept,
+                    'time': candle.time
+                })
+        
+        # Log all found sweeps
+        if all_sweeps:
+            logger.info(f"🔍 Found {len(all_sweeps)} sweep(s) in Frankfurt/London window:")
+            for sweep in all_sweeps:
+                emoji = "🔴" if sweep['type'] == 'bearish' else "🟢"
+                logger.info(f"   {emoji} {sweep['type'].upper()} @ {sweep['time'].strftime('%H:%M')} - swept {sweep['pips']:.1f} pips")
+            
+            # Return the MOST RECENT sweep (last in list = newest)
+            chosen_sweep = all_sweeps[0]  # Since we iterate backwards, first = newest
+            logger.info(f"✅ Using MOST RECENT sweep: {chosen_sweep['type'].upper()} @ {chosen_sweep['time'].strftime('%H:%M')}")
+            
+            if chosen_sweep['type'] == 'bearish':
+                logger.info(f"🔴 BEARISH SWEEP detected: High={chosen_sweep['candle'].high:.5f}, Close={chosen_sweep['candle'].close:.5f}")
+            else:
+                logger.info(f"🟢 BULLISH SWEEP detected: Low={chosen_sweep['candle'].low:.5f}, Close={chosen_sweep['candle'].close:.5f}")
+            
+            return chosen_sweep
         
         return None
     
     def detect_choch(self, direction: str, after_index: int) -> Optional[Dict]:
         """
         Detect Change of Character (market structure shift)
+        WITH DETAILED DEBUG LOGGING
         
         Args:
             direction: 'BUY' or 'SELL'
@@ -208,48 +233,81 @@ class StrategyEngine:
             Dict with CHOCH details or None
         """
         if not self.m5_candles or after_index >= len(self.m5_candles):
+            logger.debug("❌ CHOCH: Not enough candles or invalid index")
             return None
         
         # Find swing points after sweep
         candles_after_sweep = self.m5_candles[after_index:]
         
         if len(candles_after_sweep) < Config.SWING_LOOKBACK * 2 + 1:
+            logger.debug(f"❌ CHOCH: Only {len(candles_after_sweep)} candles after sweep (need {Config.SWING_LOOKBACK * 2 + 1})")
             return None
         
         swing_highs = utils.find_swing_highs(candles_after_sweep, Config.SWING_LOOKBACK)
         swing_lows = utils.find_swing_lows(candles_after_sweep, Config.SWING_LOOKBACK)
         
+        logger.debug(f"🔍 CHOCH check for {direction}:")
+        logger.debug(f"   Candles after sweep: {len(candles_after_sweep)}")
+        logger.debug(f"   Swing Highs found: {len(swing_highs)}")
+        logger.debug(f"   Swing Lows found: {len(swing_lows)}")
+        
         if direction == 'SELL':
             # For SELL: need lower-low (break of bullish structure)
-            if len(swing_lows) >= 2:
-                # Check if latest low is lower than previous
-                latest_low = swing_lows[-1]
-                previous_low = swing_lows[-2]
-                
-                if latest_low['price'] < previous_low['price']:
-                    logger.info(f"🔻 CHOCH (SELL) detected: Broken level {previous_low['price']:.5f}")
-                    return {
-                        'type': 'bearish_choch',
-                        'broken_level': previous_low['price'],
-                        'new_low': latest_low['price'],
-                        'time': latest_low['time']
-                    }
+            logger.debug(f"   → Looking for LOWER-LOW (bearish CHOCH)")
+            
+            if len(swing_lows) < 2:
+                logger.debug(f"   ❌ Not enough swing lows: {len(swing_lows)} (need 2+)")
+                return None
+            
+            latest_low = swing_lows[-1]
+            previous_low = swing_lows[-2]
+            
+            logger.debug(f"   Previous Low: {previous_low['price']:.5f} @ {previous_low['time'].strftime('%H:%M')}")
+            logger.debug(f"   Latest Low:   {latest_low['price']:.5f} @ {latest_low['time'].strftime('%H:%M')}")
+            
+            if latest_low['price'] < previous_low['price']:
+                diff_pips = (previous_low['price'] - latest_low['price']) * 10000
+                logger.info(f"🔻 CHOCH (SELL) detected!")
+                logger.info(f"   Broke {previous_low['price']:.5f} with {latest_low['price']:.5f} ({diff_pips:.1f} pips lower)")
+                return {
+                    'type': 'bearish_choch',
+                    'broken_level': previous_low['price'],
+                    'new_low': latest_low['price'],
+                    'time': latest_low['time']
+                }
+            else:
+                diff_pips = (latest_low['price'] - previous_low['price']) * 10000
+                logger.debug(f"   ❌ Latest low is HIGHER by {diff_pips:.1f} pips → NO CHOCH yet")
+                return None
         
         elif direction == 'BUY':
             # For BUY: need higher-high (break of bearish structure)
-            if len(swing_highs) >= 2:
-                # Check if latest high is higher than previous
-                latest_high = swing_highs[-1]
-                previous_high = swing_highs[-2]
-                
-                if latest_high['price'] > previous_high['price']:
-                    logger.info(f"🔺 CHOCH (BUY) detected: Broken level {previous_high['price']:.5f}")
-                    return {
-                        'type': 'bullish_choch',
-                        'broken_level': previous_high['price'],
-                        'new_high': latest_high['price'],
-                        'time': latest_high['time']
-                    }
+            logger.debug(f"   → Looking for HIGHER-HIGH (bullish CHOCH)")
+            
+            if len(swing_highs) < 2:
+                logger.debug(f"   ❌ Not enough swing highs: {len(swing_highs)} (need 2+)")
+                return None
+            
+            latest_high = swing_highs[-1]
+            previous_high = swing_highs[-2]
+            
+            logger.debug(f"   Previous High: {previous_high['price']:.5f} @ {previous_high['time'].strftime('%H:%M')}")
+            logger.debug(f"   Latest High:   {latest_high['price']:.5f} @ {latest_high['time'].strftime('%H:%M')}")
+            
+            if latest_high['price'] > previous_high['price']:
+                diff_pips = (latest_high['price'] - previous_high['price']) * 10000
+                logger.info(f"🔺 CHOCH (BUY) detected!")
+                logger.info(f"   Broke {previous_high['price']:.5f} with {latest_high['price']:.5f} ({diff_pips:.1f} pips higher)")
+                return {
+                    'type': 'bullish_choch',
+                    'broken_level': previous_high['price'],
+                    'new_high': latest_high['price'],
+                    'time': latest_high['time']
+                }
+            else:
+                diff_pips = (previous_high['price'] - latest_high['price']) * 10000
+                logger.debug(f"   ❌ Latest high is LOWER by {diff_pips:.1f} pips → NO CHOCH yet")
+                return None
         
         return None
     
