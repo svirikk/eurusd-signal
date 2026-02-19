@@ -66,12 +66,17 @@ class TelegramNotifier:
         # Emoji based on direction
         emoji = "🔴" if signal.type == "SELL" else "🟢"
         
+        # RR warning if below recommended minimum
+        rr_warning = ""
+        if signal.risk_reward < Config.MIN_RISK_REWARD:
+            rr_warning = f"\n⚠️ <b>WARNING: Low Risk/Reward ratio ({signal.risk_reward:.2f} vs recommended {Config.MIN_RISK_REWARD})</b>\n"
+        
         message = f"""
 {emoji} <b>EURUSD — {signal.type}</b> (M5)
 ━━━━━━━━━━━━━━━━━━━━━━
 
 🕒 <b>Time:</b> {signal.timestamp.strftime('%Y-%m-%d %H:%M:%S')} UTC
-
+{rr_warning}
 <b>1️⃣ Session Context:</b>
    • Asia Range High: {ctx['asia_range']['high']:.5f}
    • Asia Range Low: {ctx['asia_range']['low']:.5f}
@@ -109,7 +114,7 @@ class TelegramNotifier:
    ✓ CHOCH confirms market structure shift
    ✓ FVG provides optimal entry zone
    ✓ TP targets opposite side of Asia range
-   ✓ London session volatility supports move
+   ✓ SL protects from invalidation
 
 <b>⚠️ DISCLAIMER:</b>
 <i>This is a signal alert only. Manual execution required.

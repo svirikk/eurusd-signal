@@ -48,9 +48,10 @@ class TradingSignal:
     
     def is_valid(self) -> bool:
         """Check if signal meets minimum requirements"""
+        # ✅ ЗАВЖДИ валідний - user хоче всі сигнали!
+        # Просто логуємо RR для інформації
         if self.risk_reward < Config.MIN_RISK_REWARD:
-            logger.warning(f"❌ Signal RR too low: {self.risk_reward:.2f}")
-            return False
+            logger.warning(f"⚠️ Low RR: {self.risk_reward:.2f} (recommended min: {Config.MIN_RISK_REWARD})")
         
         if self.risk_pips <= 0 or self.reward_pips <= 0:
             logger.warning(f"❌ Invalid risk/reward: R={self.risk_pips:.1f}, RW={self.reward_pips:.1f}")
@@ -472,24 +473,52 @@ class StrategyEngine:
         entry_price = fvg['mid']
         
         if sweep['direction'] == 'SELL':
-            # Stop loss above recent swing high
-            swing_highs = utils.find_swing_highs(self.m5_candles, Config.SWING_LOOKBACK)
-            if not swing_highs:
+            # ✅ SELL SETUP (bearish sweep above Asia High)
+            # Entry: FVG after CHOCH down
+            # SL: Above Asia High (protect from move back up)
+            # TP: Asia Low (opposite side of range)
+            
+            stop_loss = asia_range.high + self.client.pips_to_price(Config.SL_BUFFER_PIPS)
+            take_profit = asia_range.low
+            
+            logger.debug(f"📊 SELL setup:")
+            logger.debug(f"   Entry: {entry_price:.5f} (FVG mid)")
+            logger.debug(f"   SL: {stop_loss:.5f} (Asia High + {Config.SL_BUFFER_PIPS} pips)")
+            logger.debug(f"   TP: {take_profit:.5f} (Asia Low)")
+            
+            # Validate: SL must be ABOVE entry, TP must be BELOW entry
+            if stop_loss <= entry_price:
+                logger.warning(f"❌ Invalid SELL setup: SL {stop_loss:.5f} not above entry {entry_price:.5f}")
                 return None
             
-            sl_level = swing_highs[-1]['price']
-            stop_loss = sl_level + self.client.pips_to_price(Config.SL_BUFFER_PIPS)
-            take_profit = asia_range.low  # TP1: opposite side of Asia range
+            if take_profit >= entry_price:
+                logger.warning(f"❌ Invalid SELL setup: TP {take_profit:.5f} not below entry {entry_price:.5f}")
+                logger.warning(f"   Entry is already below Asia Low - setup invalid!")
+                return None
             
         else:  # BUY
-            # Stop loss below recent swing low
-            swing_lows = utils.find_swing_lows(self.m5_candles, Config.SWING_LOOKBACK)
-            if not swing_lows:
+            # ✅ BUY SETUP (bullish sweep below Asia Low)
+            # Entry: FVG after CHOCH up
+            # SL: Below Asia Low (protect from move back down)
+            # TP: Asia High (opposite side of range)
+            
+            stop_loss = asia_range.low - self.client.pips_to_price(Config.SL_BUFFER_PIPS)
+            take_profit = asia_range.high
+            
+            logger.debug(f"📊 BUY setup:")
+            logger.debug(f"   Entry: {entry_price:.5f} (FVG mid)")
+            logger.debug(f"   SL: {stop_loss:.5f} (Asia Low - {Config.SL_BUFFER_PIPS} pips)")
+            logger.debug(f"   TP: {take_profit:.5f} (Asia High)")
+            
+            # Validate: SL must be BELOW entry, TP must be ABOVE entry
+            if stop_loss >= entry_price:
+                logger.warning(f"❌ Invalid BUY setup: SL {stop_loss:.5f} not below entry {entry_price:.5f}")
                 return None
             
-            sl_level = swing_lows[-1]['price']
-            stop_loss = sl_level - self.client.pips_to_price(Config.SL_BUFFER_PIPS)
-            take_profit = asia_range.high  # TP1: opposite side of Asia range
+            if take_profit <= entry_price:
+                logger.warning(f"❌ Invalid BUY setup: TP {take_profit:.5f} not above entry {entry_price:.5f}")
+                logger.warning(f"   Entry is already above Asia High - setup invalid!")
+                return None
         
         # Step 6: Build context
         context = {
